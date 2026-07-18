@@ -10,6 +10,12 @@ from models.task import Task
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import os
+import requests
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from supabase import create_client, Client
+
+security = HTTPBearer()
 
 load_dotenv()
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_PUBLISHABLE_KEY"))
@@ -18,6 +24,18 @@ app = FastAPI()
 
 fake_items_db = [{"item_name": "Foo"}, {"item_name": "Bar"}, {"item_name": "Baz"}, {"item_name": "Qux"}, {"item_name": "Quux"}, {"item_name": "Corge"}, {"item_name": "Grault"}, {"item_name": "Garply"}, {"item_name": "Waldo"}, {"item_name": "Fred"}, {"item_name": "Plugh"}, {"item_name": "Xyzzy"}, {"item_name": "Thud"}]
 
+def get_supabase_client(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Client:
+   token = credentials.credentials
+   try:
+      client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_PUBLISHABLE_KEY"))
+      client.postgrest.auth(token)
+      return client
+   except Exception:
+      raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de Supabase inválido o expirado"
+      )
+   
 @app.get("/")
 def read_root():
     return {"message": "¡Hola, Fast API!"}
@@ -92,7 +110,29 @@ def create_task(task: Task):
   }).execute()
   return data.data
 
-@app.get("/tasks/")
-def get_tasks():
-   data = supabase.table("task").select("*").execute()
-   return data.data
+@app.get("/tasks/", status_code=status.HTTP_200_OK)
+def get_tasks(supabase: Client = Depends(get_supabase_client)):
+   try:
+      response = supabase.table("task").select("*").execute()
+
+      return response.data
+
+   except Exception as e:
+      raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al recuperar las tareas desde la base de datos."
+      )
+
+@app.post("/auth/login-temporal")
+def login_temporal(email: str, password: str):
+   # Endpoint nativo de Supabase Auth
+   url = f"{os.getenv('SUPABASE_URL')}/auth/v1/token?grant_type=password"
+   headers = {"apikey": os.getenv("SUPABASE_PUBLISHABLE_KEY"), "Content-Type": "application/json"}
+   payload = {"email": email, "password": password}
+
+   response = requests.post(url, json=payload, headers=headers)
+   if response.status_code != 200:
+      raise HTTPException(status_code=400, detail="Credenciales incorrectas en Supabase")
+
+   # Retornamos el access_token que es el JWT que necesitas
+   return {"access_token": response.json().get("access_token")}
